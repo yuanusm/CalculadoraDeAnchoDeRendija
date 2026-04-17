@@ -69,7 +69,7 @@ class App:
         ttk.Button(btn_frame, text="Agregar fila", command=self.agregar_fila).pack(side="left", padx=(0, 4))
         ttk.Button(btn_frame, text="Eliminar fila", command=self.eliminar_fila).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Limpiar tabla", command=self.limpiar_tabla).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="Calcular", command=self.calcular).pack(side="right")
+        ttk.Button(btn_frame, text="Calcular", command=self.calcular).pack(side="left", padx=4)
 
         # ====================== ZONA INFERIOR ======================
         left = ttk.Frame(bottom)
