@@ -15,6 +15,8 @@ def sig_figs_round(value, uncertainty):
 
 # ─────────────────────────── APP ───────────────────────────
 class App:
+    MAX_FILAS = 20
+
     def __init__(self, root):
         self.root = root
         root.title("Difracción - Ancho de Rendija (Single Slit)")
@@ -23,6 +25,7 @@ class App:
 
         style = ttk.Style()
         style.theme_use("clam")
+        style.configure("Treeview", rowheight=24)
 
         container = ttk.Frame(root, padding=8)
         container.pack(fill="both", expand=True)
@@ -64,7 +67,7 @@ class App:
         data_frame = ttk.LabelFrame(left, text=" Datos Experimentales  (L en metros  |  y en centímetros) ", padding=8)
         data_frame.pack(fill="both", expand=True, pady=(0, 6))
 
-        self.tree = ttk.Treeview(data_frame, columns=("L", "y"), show="headings", height=17)
+        self.tree = ttk.Treeview(data_frame, columns=("L", "y"), show="headings", height=self.MAX_FILAS)
         self.tree.heading("L", text="L (m)")
         self.tree.heading("y", text="y (cm)")
         self.tree.column("L", width=180, anchor="center")
@@ -76,7 +79,7 @@ class App:
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        self.tree.bind("<Double-1>", self.on_click)
+        self.tree.bind("<ButtonRelease-1>", self.on_click)
 
         self.entry_edit = None
         self.current_item = None
@@ -129,13 +132,17 @@ class App:
             self.residuos.column(col, width=width, anchor="center")
         self.residuos.pack(fill="both", expand=True)
 
-        self.agregar_fila()
+        self._crear_filas_iniciales()
 
     # ====================== EDICIÓN DIRECTA EN CELDA ======================
     def on_click(self, event):
         region = self.tree.identify("region", event.x, event.y)
         if region != "cell":
             return
+
+        # Si había una celda en edición, guárdala antes de cambiar de celda
+        if self.entry_edit and self.current_item is not None:
+            self.guardar_edicion()
 
         column = self.tree.identify_column(event.x)
         item = self.tree.identify_row(event.y)
@@ -155,12 +162,42 @@ class App:
         self.entry_edit.select_range(0, tk.END)
         self.entry_edit.focus()
 
-        self.entry_edit.bind("<Return>", self.guardar_edicion)
+        self.entry_edit.bind("<Return>", self.guardar_y_mover)
         self.entry_edit.bind("<FocusOut>", self.guardar_edicion)
+
+    def guardar_y_mover(self, event=None):
+        if not self.entry_edit or self.current_item is None:
+            return
+
+        item_actual = self.current_item
+        col_actual = self.current_column
+        guardado = self.guardar_edicion()
+        if not guardado:
+            return
+
+        hijos = self.tree.get_children()
+        if item_actual not in hijos:
+            return
+        idx = hijos.index(item_actual)
+
+        if col_actual == 0:
+            next_item, next_col_id = item_actual, "#2"
+        else:
+            if idx + 1 >= len(hijos):
+                return
+            next_item, next_col_id = hijos[idx + 1], "#1"
+
+        bbox = self.tree.bbox(next_item, next_col_id)
+        if not bbox:
+            return
+
+        x, y, width, height = bbox
+        fake_event = type("Event", (), {"x": x + width // 2, "y": y + height // 2})()
+        self.on_click(fake_event)
 
     def guardar_edicion(self, event=None):
         if not self.entry_edit or not self.current_item:
-            return
+            return True
 
         new_value = self.entry_edit.get().strip()
         if new_value:
@@ -169,7 +206,7 @@ class App:
             except ValueError:
                 messagebox.showerror("Error", "Ingrese un número válido")
                 self.entry_edit.focus()
-                return
+                return False
 
         values = list(self.tree.item(self.current_item, "values"))
         values[self.current_column] = new_value
@@ -178,10 +215,23 @@ class App:
         self.entry_edit.destroy()
         self.entry_edit = None
         self.current_item = None
+        self.current_column = None
+        return True
 
     # ====================== GESTIÓN DE FILAS ======================
+    def _crear_filas_iniciales(self):
+        for _ in range(self.MAX_FILAS):
+            self.agregar_fila()
+
     def agregar_fila(self):
-        self.tree.insert("", "end", values=("", ""))
+        if len(self.tree.get_children()) >= self.MAX_FILAS:
+            return
+        item = self.tree.insert("", "end", values=("", ""))
+        idx = len(self.tree.get_children()) - 1
+        tag = "par" if idx % 2 == 0 else "impar"
+        self.tree.item(item, tags=(tag,))
+        self.tree.tag_configure("par", background="#ffffff")
+        self.tree.tag_configure("impar", background="#f4f7fb")
 
     def eliminar_fila(self):
         selected = self.tree.selection()
@@ -191,9 +241,14 @@ class App:
             messagebox.showwarning("Atención", "Seleccione una fila para eliminar")
 
     def limpiar_tabla(self):
+        if self.entry_edit:
+            self.entry_edit.destroy()
+            self.entry_edit = None
+            self.current_item = None
+            self.current_column = None
         for item in self.tree.get_children():
             self.tree.delete(item)
-        self.agregar_fila()
+        self._crear_filas_iniciales()
 
     def _leer_datos(self):
         L_list = []
