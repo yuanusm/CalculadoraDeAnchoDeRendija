@@ -20,8 +20,8 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("Difracción - Ancho de Rendija (Single Slit)")
-        root.geometry("1180x690")
-        root.minsize(1080, 620)
+        root.geometry("760x680")
+        root.minsize(700, 620)
 
         style = ttk.Style()
         style.theme_use("clam")
@@ -30,16 +30,16 @@ class App:
         container = ttk.Frame(root, padding=8)
         container.pack(fill="both", expand=True)
 
-        # Layout horizontal compacto: izquierda datos, derecha resultados
-        left = ttk.Frame(container)
-        left.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        # Layout compacto vertical
+        top = ttk.Frame(container)
+        top.pack(fill="x", pady=(0, 6))
 
-        right = ttk.Frame(container)
-        right.pack(side="right", fill="both", expand=True, padx=(6, 0))
+        bottom = ttk.Frame(container)
+        bottom.pack(fill="both", expand=True)
 
         # ====================== PARÁMETROS ======================
-        param_frame = ttk.LabelFrame(left, text=" Parámetros del Experimento ", padding=8)
-        param_frame.pack(fill="x", pady=(0, 6))
+        param_frame = ttk.LabelFrame(top, text=" Parámetros del Experimento ", padding=8)
+        param_frame.pack(fill="x")
 
         ttk.Label(param_frame, text="λ (nm):").grid(row=0, column=0, sticky="w", pady=2)
         self.lambda_entry = ttk.Entry(param_frame, width=9)
@@ -63,35 +63,37 @@ class App:
             variable=self.lateral_var,
         ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 0))
 
+        btn_frame = ttk.Frame(top)
+        btn_frame.pack(fill="x", pady=(6, 0))
+
+        ttk.Button(btn_frame, text="Agregar fila", command=self.agregar_fila).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_frame, text="Eliminar fila", command=self.eliminar_fila).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Limpiar tabla", command=self.limpiar_tabla).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Calcular", command=self.calcular).pack(side="right")
+
+        # ====================== ZONA INFERIOR ======================
+        left = ttk.Frame(bottom)
+        left.pack(side="left", fill="both", expand=True, padx=(0, 6))
+
+        right = ttk.Frame(bottom)
+        right.pack(side="right", fill="both", expand=True, padx=(6, 0))
+
         # ====================== TABLA DE DATOS ======================
         data_frame = ttk.LabelFrame(left, text=" Datos Experimentales  (L en metros  |  y en centímetros) ", padding=8)
-        data_frame.pack(fill="both", expand=True, pady=(0, 6))
+        data_frame.pack(fill="both", expand=True)
 
         self.tree = ttk.Treeview(data_frame, columns=("L", "y"), show="headings", height=self.MAX_FILAS)
         self.tree.heading("L", text="L (m)")
         self.tree.heading("y", text="y (cm)")
         self.tree.column("L", width=180, anchor="center")
         self.tree.column("y", width=180, anchor="center")
-
-        vsb = ttk.Scrollbar(data_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-
-        self.tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
+        self.tree.pack(fill="both", expand=True)
 
         self.tree.bind("<ButtonRelease-1>", self.on_click)
 
         self.entry_edit = None
         self.current_item = None
         self.current_column = None
-
-        btn_frame = ttk.Frame(left)
-        btn_frame.pack(fill="x", pady=(0, 6))
-
-        ttk.Button(btn_frame, text="Agregar fila", command=self.agregar_fila).pack(side="left", padx=(0, 4))
-        ttk.Button(btn_frame, text="Eliminar fila", command=self.eliminar_fila).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="Limpiar tabla", command=self.limpiar_tabla).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="Calcular", command=self.calcular).pack(side="right")
 
         # ====================== RESULTADOS ======================
         result_forced = ttk.LabelFrame(right, text=" Resultado: Ajuste forzado por origen ", padding=8)
@@ -108,29 +110,6 @@ class App:
         warning_frame.pack(fill="x", pady=(0, 6))
         self.warnings = tk.Text(warning_frame, height=6, font=("Consolas", 10), foreground="#b22222")
         self.warnings.pack(fill="x")
-
-        residual_frame = ttk.LabelFrame(right, text=" Residuos (forzado / no forzado) ", padding=8)
-        residual_frame.pack(fill="both", expand=True)
-
-        self.residuos = ttk.Treeview(
-            residual_frame,
-            columns=("n", "L", "y", "yfit0", "res0", "yfit1", "res1"),
-            show="headings",
-            height=8,
-        )
-        headers = [
-            ("n", "#", 35),
-            ("L", "L (m)", 95),
-            ("y", "y usado (m)", 95),
-            ("yfit0", "y fit forzado", 105),
-            ("res0", "Residuo forz. (mm)", 115),
-            ("yfit1", "y fit libre", 105),
-            ("res1", "Residuo libre (mm)", 115),
-        ]
-        for col, txt, width in headers:
-            self.residuos.heading(col, text=txt)
-            self.residuos.column(col, width=width, anchor="center")
-        self.residuos.pack(fill="both", expand=True)
 
         self._crear_filas_iniciales()
 
@@ -332,11 +311,15 @@ class App:
             "rel_a": rel_a,
             "sv": sv,
             "su": su,
+            "a_um": a_um,
+            "da_um": da_um,
             "n": n,
         }
 
     def _formatear_resultado(self, result, forzado):
         texto = f"a = {result['sv']} ± {result['su']} µm\n\n"
+        texto += f"a (sin restricción) = {result['a_um']:.12g} µm\n"
+        texto += f"Δa (sin restricción) = {result['da_um']:.12g} µm\n\n"
         texto += f"Pendiente C     = {result['C']:.6g}\n"
         if not forzado:
             texto += f"Intercepto      = {result['intercept']:.6f} m\n"
@@ -400,26 +383,6 @@ class App:
 
             self.warnings.delete("1.0", tk.END)
             self.warnings.insert(tk.END, self._generar_advertencias(L, res_forzado, res_libre))
-
-            for item in self.residuos.get_children():
-                self.residuos.delete(item)
-
-            for i in range(n):
-                res0_mm = (y_m[i] - res_forzado["y_pred"][i]) * 1000
-                res1_mm = (y_m[i] - res_libre["y_pred"][i]) * 1000
-                self.residuos.insert(
-                    "",
-                    "end",
-                    values=(
-                        i + 1,
-                        f"{L[i]:.4f}",
-                        f"{y_m[i]:.5f}",
-                        f"{res_forzado['y_pred'][i]:.5f}",
-                        f"{res0_mm:.3f}",
-                        f"{res_libre['y_pred'][i]:.5f}",
-                        f"{res1_mm:.3f}",
-                    ),
-                )
 
         except Exception as e:
             messagebox.showerror("Error", f"Error durante el cálculo:\n{str(e)}")
