@@ -1,7 +1,11 @@
+import re
 import tkinter as tk
 from tkinter import ttk, messagebox
+from datetime import datetime
 import numpy as np
 from scipy import stats
+from export_utils import crear_directorio_exportacion, guardar_archivos_exportacion
+from plot_utils import generar_grafica_con_resumen
 
 
 # ─────────────────────────── UTILIDADES ───────────────────────────
@@ -16,6 +20,7 @@ def sig_figs_round(value, uncertainty):
 # ─────────────────────────── APP ───────────────────────────
 class App:
     MAX_FILAS = 20
+    _PATRON_NUMERICO_PARCIAL = re.compile(r"^(\d+(\.\d*)?|\.\d*)?$")
 
     def __init__(self, root):
         self.root = root
@@ -56,12 +61,22 @@ class App:
         self.m_entry.grid(row=0, column=5, padx=(4, 10))
         self.m_entry.insert(0, "5")
 
+        ttk.Label(param_frame, text="ΔL (m):").grid(row=1, column=0, sticky="w", pady=2)
+        self.dL_entry = ttk.Entry(param_frame, width=9)
+        self.dL_entry.grid(row=1, column=1, padx=(4, 12))
+        self.dL_entry.insert(0, "0.001")
+
+        ttk.Label(param_frame, text="Δy (cm):").grid(row=1, column=2, sticky="w", pady=2)
+        self.dy_entry = ttk.Entry(param_frame, width=9)
+        self.dy_entry.grid(row=1, column=3, padx=(4, 12))
+        self.dy_entry.insert(0, "0.1")
+
         self.lateral_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             param_frame,
             text="Modo medición lateral (2m): interpretar y como 2m y usar y/2 internamente",
             variable=self.lateral_var,
-        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 0))
 
         btn_frame = ttk.Frame(top)
         btn_frame.pack(fill="x", pady=(6, 0))
@@ -70,6 +85,7 @@ class App:
         ttk.Button(btn_frame, text="Eliminar fila", command=self.eliminar_fila).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Limpiar tabla", command=self.limpiar_tabla).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Calcular", command=self.calcular).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Exportar registro", command=self.exportar_registro).pack(side="left", padx=4)
 
         # ====================== ZONA INFERIOR ======================
         left = ttk.Frame(bottom)
@@ -94,26 +110,60 @@ class App:
         self.entry_edit = None
         self.current_item = None
         self.current_column = None
+        self._validacion_celda = self.root.register(self._validar_numero_no_negativo_parcial)
 
         # ====================== RESULTADOS ======================
         result_forced = ttk.LabelFrame(right, text=" Resultado: Ajuste forzado por origen ", padding=8)
         result_forced.pack(fill="both", expand=True, pady=(0, 6))
-        self.resultado_forzado = tk.Text(result_forced, height=11, font=("Consolas", 10))
+        self.resultado_forzado = tk.Text(result_forced, height=11, font=("Consolas", 10), state="disabled")
         self.resultado_forzado.pack(fill="both", expand=True)
 
         result_free = ttk.LabelFrame(right, text=" Resultado: Ajuste sin forzar origen ", padding=8)
         result_free.pack(fill="both", expand=True, pady=(0, 6))
-        self.resultado_libre = tk.Text(result_free, height=11, font=("Consolas", 10))
+        self.resultado_libre = tk.Text(result_free, height=11, font=("Consolas", 10), state="disabled")
         self.resultado_libre.pack(fill="both", expand=True)
 
         warning_frame = ttk.LabelFrame(right, text=" Advertencias ", padding=8)
         warning_frame.pack(fill="x", pady=(0, 6))
-        self.warnings = tk.Text(warning_frame, height=6, font=("Consolas", 10), foreground="#b22222")
+        self.warnings = tk.Text(warning_frame, height=6, font=("Consolas", 10), foreground="#b22222", state="disabled")
         self.warnings.pack(fill="x")
 
         self._crear_filas_iniciales()
 
     # ====================== EDICIÓN DIRECTA EN CELDA ======================
+    def _validar_numero_no_negativo_parcial(self, text):
+        return bool(self._PATRON_NUMERICO_PARCIAL.match(text))
+
+    def _parse_float_no_negativo(self, value, field_name):
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"El campo '{field_name}' no puede estar vacío")
+        try:
+            numero = float(text)
+        except ValueError as exc:
+            raise ValueError(f"El campo '{field_name}' debe ser numérico") from exc
+        if numero < 0:
+            raise ValueError(f"El campo '{field_name}' no admite valores negativos")
+        return numero
+
+    def _parse_int_positivo(self, value, field_name):
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"El campo '{field_name}' no puede estar vacío")
+        try:
+            numero = int(text)
+        except ValueError as exc:
+            raise ValueError(f"El campo '{field_name}' debe ser un entero") from exc
+        if numero <= 0:
+            raise ValueError(f"El campo '{field_name}' debe ser mayor que cero")
+        return numero
+
+    def _set_texto_solo_lectura(self, widget, text):
+        widget.config(state="normal")
+        widget.delete("1.0", tk.END)
+        widget.insert(tk.END, text)
+        widget.config(state="disabled")
+
     def on_click(self, event):
         region = self.tree.identify("region", event.x, event.y)
         if region != "cell":
@@ -135,7 +185,12 @@ class App:
         current_value = values[self.current_column]
 
         x, y, width, height = self.tree.bbox(item, column)
-        self.entry_edit = ttk.Entry(self.tree, justify="center")
+        self.entry_edit = ttk.Entry(
+            self.tree,
+            justify="center",
+            validate="key",
+            validatecommand=(self._validacion_celda, "%P"),
+        )
         self.entry_edit.place(x=x, y=y, width=width, height=height)
         self.entry_edit.insert(0, current_value)
         self.entry_edit.select_range(0, tk.END)
@@ -180,12 +235,14 @@ class App:
 
         new_value = self.entry_edit.get().strip()
         if new_value:
-            try:
-                _ = float(new_value)
-            except ValueError:
-                messagebox.showerror("Error", "Ingrese un número válido")
-                self.entry_edit.focus()
-                return False
+            if not self._validar_numero_no_negativo_parcial(new_value):
+                new_value = ""
+            else:
+                try:
+                    if float(new_value) < 0:
+                        new_value = ""
+                except ValueError:
+                    new_value = ""
 
         values = list(self.tree.item(self.current_item, "values"))
         values[self.current_column] = new_value
@@ -239,19 +296,136 @@ class App:
             y_txt = str(vals[1]).strip()
             if not L_txt and not y_txt:
                 continue
+            if not L_txt or not y_txt:
+                invalid_rows.append(f"{idx} (faltan datos)")
+                continue
             try:
-                L_list.append(float(L_txt))
-                y_list_cm.append(float(y_txt))
-            except ValueError:
-                invalid_rows.append(idx)
+                L_val = self._parse_float_no_negativo(L_txt, f"L fila {idx}")
+                y_val = self._parse_float_no_negativo(y_txt, f"y fila {idx}")
+                L_list.append(L_val)
+                y_list_cm.append(y_val)
+            except ValueError as exc:
+                invalid_rows.append(f"{idx} ({exc})")
 
         if invalid_rows:
-            raise ValueError(f"Filas con datos no numéricos: {invalid_rows}")
+            raise ValueError("Filas con datos inválidos: " + "; ".join(invalid_rows))
 
         return np.array(L_list), np.array(y_list_cm)
 
+    def _obtener_resultados(self):
+        if self.entry_edit and not self.guardar_edicion():
+            return None
+
+        lambda_nm = self._parse_float_no_negativo(self.lambda_entry.get(), "λ (nm)")
+        delta_lambda_nm = self._parse_float_no_negativo(self.dlambda_entry.get(), "Δλ (nm)")
+        m = self._parse_int_positivo(self.m_entry.get(), "m (orden)")
+        delta_L_m = self._parse_float_no_negativo(self.dL_entry.get(), "ΔL (m)")
+        delta_y_cm = self._parse_float_no_negativo(self.dy_entry.get(), "Δy (cm)")
+
+        L, y_cm = self._leer_datos()
+        n = len(L)
+        if n < 2:
+            raise ValueError("Ingrese al menos 2 puntos válidos")
+
+        y_m = y_cm * 1e-2
+        if self.lateral_var.get():
+            y_m = y_m / 2.0
+
+        res_forzado = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, True, delta_L_m, delta_y_cm * 1e-2)
+        res_libre = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, False, delta_L_m, delta_y_cm * 1e-2)
+        advertencias = self._generar_advertencias(L, res_forzado, res_libre)
+
+        return {
+            "lambda_nm": lambda_nm,
+            "delta_lambda_nm": delta_lambda_nm,
+            "m": m,
+            "delta_L_m": delta_L_m,
+            "delta_y_cm": delta_y_cm,
+            "L": L,
+            "y_cm": y_cm,
+            "y_m": y_m,
+            "forzado": res_forzado,
+            "libre": res_libre,
+            "advertencias": advertencias,
+            "lateral": self.lateral_var.get(),
+        }
+
+    def exportar_registro(self):
+        try:
+            data = self._obtener_resultados()
+            if data is None:
+                return
+
+            # Actualizar paneles de resultados antes de exportar
+            self._set_texto_solo_lectura(self.resultado_forzado, self._formatear_resultado(data["forzado"], True))
+            self._set_texto_solo_lectura(self.resultado_libre, self._formatear_resultado(data["libre"], False))
+            self._set_texto_solo_lectura(self.warnings, data["advertencias"])
+
+            carpeta = crear_directorio_exportacion()
+            resumen_forzado = (
+                f"a = {data['forzado']['sv']} ± {data['forzado']['su']} µm\n"
+                f"C = {data['forzado']['C']:.6g} ± {data['forzado']['delta_C']:.6g}\n"
+                f"R² = {data['forzado']['r2']:.5f}"
+            )
+            resumen_libre = (
+                f"a = {data['libre']['sv']} ± {data['libre']['su']} µm\n"
+                f"C = {data['libre']['C']:.6g} ± {data['libre']['delta_C']:.6g}\n"
+                f"b = {data['libre']['intercept']:.6g} m\n"
+                f"R² = {data['libre']['r2']:.5f}"
+            )
+
+            ruta_grafica_forzado = carpeta / "grafica_forzado_origen.png"
+            ruta_grafica_libre = carpeta / "grafica_sin_forzar_origen.png"
+
+            generar_grafica_con_resumen(
+                data["L"],
+                data["y_m"],
+                data["forzado"]["y_pred"],
+                data["forzado"]["C"],
+                data["forzado"]["delta_C"],
+                data["forzado"]["intercept"],
+                "Ajuste forzado al origen",
+                resumen_forzado,
+                ruta_grafica_forzado,
+            )
+            generar_grafica_con_resumen(
+                data["L"],
+                data["y_m"],
+                data["libre"]["y_pred"],
+                data["libre"]["C"],
+                data["libre"]["delta_C"],
+                data["libre"]["intercept"],
+                "Ajuste sin forzar al origen",
+                resumen_libre,
+                ruta_grafica_libre,
+            )
+
+            guardar_archivos_exportacion(
+                carpeta=carpeta,
+                L=data["L"],
+                y_cm=data["y_cm"],
+                parametros={
+                    "lambda_nm": data["lambda_nm"],
+                    "delta_lambda_nm": data["delta_lambda_nm"],
+                    "m": data["m"],
+                    "delta_L_m": data["delta_L_m"],
+                    "delta_y_cm": data["delta_y_cm"],
+                    "modo_lateral_2m": data["lateral"],
+                },
+                resultado_forzado=self._formatear_resultado(data["forzado"], True),
+                resultado_libre=self._formatear_resultado(data["libre"], False),
+                advertencias=data["advertencias"],
+                log=f"Exportación creada: {datetime.now().isoformat(timespec='seconds')}\n"
+                    f"Carpeta: {carpeta}\n"
+                    f"Se generaron: datos.csv, resultados.txt, log.txt, grafica_forzado_origen.png, grafica_sin_forzar_origen.png",
+            )
+
+            messagebox.showinfo("Éxito", f"Registro exportado correctamente en:\n{carpeta}")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo exportar el registro:\n{str(e)}")
+
     # ====================== CÁLCULO (INTACTO POR CADA MODO) ======================
-    def _calcular_modo(self, L, y_m, lambda_nm, delta_lambda_nm, m, forzar):
+    def _calcular_modo(self, L, y_m, lambda_nm, delta_lambda_nm, m, forzar, delta_L_m=0.0, delta_y_m=0.0):
         lam = lambda_nm * 1e-9
         dlam = delta_lambda_nm * 1e-9
         n = len(L)
@@ -285,10 +459,21 @@ class App:
                 var_C = s**2 / np.sum((L - np.mean(L))**2)
             se_C = np.sqrt(var_C)
             t_factor = stats.t.ppf(0.975, df)
-            delta_C = t_factor * se_C
+            delta_C_stat = t_factor * se_C
         else:
-            delta_C = np.nan
+            delta_C_stat = np.nan
             t_factor = np.nan
+
+        y_ref = np.mean(np.abs(y_m)) if len(y_m) else 0.0
+        L_ref = np.mean(np.abs(L)) if len(L) else 0.0
+        rel_med_y = (delta_y_m / y_ref) if y_ref > 0 else 0.0
+        rel_med_L = (delta_L_m / L_ref) if L_ref > 0 else 0.0
+        rel_C_med = np.sqrt(rel_med_y**2 + rel_med_L**2)
+        delta_C_med = abs(C) * rel_C_med
+        if np.isnan(delta_C_stat):
+            delta_C = delta_C_med
+        else:
+            delta_C = np.sqrt(delta_C_stat**2 + delta_C_med**2)
 
         a = m * lam / C
         rel_lam = dlam / lam
@@ -306,6 +491,9 @@ class App:
             "y_pred": y_pred,
             "r2": r2,
             "t_factor": t_factor,
+            "delta_C": delta_C,
+            "delta_C_stat": delta_C_stat,
+            "delta_C_med": delta_C_med,
             "rel_lam": rel_lam,
             "rel_C": rel_C,
             "rel_a": rel_a,
@@ -320,7 +508,9 @@ class App:
         texto = f"a = {result['sv']} ± {result['su']} µm\n\n"
         texto += f"a (sin restricción) = {result['a_um']:.12g} µm\n"
         texto += f"Δa (sin restricción) = {result['da_um']:.12g} µm\n\n"
-        texto += f"Pendiente C     = {result['C']:.6g}\n"
+        texto += f"Pendiente C     = {result['C']:.6g} ± {result['delta_C']:.6g}\n"
+        texto += f"ΔC estadístico  = {result['delta_C_stat']:.6g}\n"
+        texto += f"ΔC instrumental = {result['delta_C_med']:.6g}\n"
         if not forzado:
             texto += f"Intercepto      = {result['intercept']:.6f} m\n"
         texto += f"R²              = {result['r2']:.5f}\n\n"
@@ -357,32 +547,12 @@ class App:
 
     def calcular(self):
         try:
-            lambda_nm = float(self.lambda_entry.get())
-            delta_lambda_nm = float(self.dlambda_entry.get())
-            m = int(self.m_entry.get())
-
-            L, y_cm = self._leer_datos()
-            n = len(L)
-            if n < 2:
-                messagebox.showerror("Error", "Ingrese al menos 2 puntos válidos")
+            data = self._obtener_resultados()
+            if data is None:
                 return
-
-            # Conversión de unidades solicitada
-            y_m = y_cm * 1e-2
-            if self.lateral_var.get():
-                y_m = y_m / 2.0
-
-            # Ambos casos siempre
-            res_forzado = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, True)
-            res_libre = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, False)
-
-            self.resultado_forzado.delete("1.0", tk.END)
-            self.resultado_libre.delete("1.0", tk.END)
-            self.resultado_forzado.insert(tk.END, self._formatear_resultado(res_forzado, True))
-            self.resultado_libre.insert(tk.END, self._formatear_resultado(res_libre, False))
-
-            self.warnings.delete("1.0", tk.END)
-            self.warnings.insert(tk.END, self._generar_advertencias(L, res_forzado, res_libre))
+            self._set_texto_solo_lectura(self.resultado_forzado, self._formatear_resultado(data["forzado"], True))
+            self._set_texto_solo_lectura(self.resultado_libre, self._formatear_resultado(data["libre"], False))
+            self._set_texto_solo_lectura(self.warnings, data["advertencias"])
 
         except Exception as e:
             messagebox.showerror("Error", f"Error durante el cálculo:\n{str(e)}")
