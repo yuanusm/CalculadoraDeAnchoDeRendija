@@ -1,6 +1,7 @@
+import csv
 import re
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import numpy as np
 from scipy import stats
 
@@ -72,6 +73,7 @@ class App:
         ttk.Button(btn_frame, text="Eliminar fila", command=self.eliminar_fila).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Limpiar tabla", command=self.limpiar_tabla).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Calcular", command=self.calcular).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Exportar CSV", command=self.exportar_csv).pack(side="left", padx=4)
 
         # ====================== ZONA INFERIOR ======================
         left = ttk.Frame(bottom)
@@ -297,6 +299,41 @@ class App:
             raise ValueError("Filas con datos inválidos: " + "; ".join(invalid_rows))
 
         return np.array(L_list), np.array(y_list_cm)
+
+    def exportar_csv(self):
+        try:
+            if self.entry_edit and not self.guardar_edicion():
+                return
+
+            filas = []
+            for row in self.tree.get_children():
+                vals = self.tree.item(row)["values"]
+                L_txt = str(vals[0]).strip()
+                y_txt = str(vals[1]).strip()
+                if not L_txt and not y_txt:
+                    continue
+                filas.append((L_txt, y_txt))
+
+            if not filas:
+                messagebox.showwarning("Atención", "No hay datos para exportar.")
+                return
+
+            path = filedialog.asksaveasfilename(
+                title="Guardar datos como CSV",
+                defaultextension=".csv",
+                filetypes=[("CSV", "*.csv"), ("Todos los archivos", "*.*")],
+            )
+            if not path:
+                return
+
+            with open(path, "w", newline="", encoding="utf-8") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(["L_m", "y_cm"])
+                writer.writerows(filas)
+
+            messagebox.showinfo("Éxito", f"Datos exportados correctamente en:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo exportar el CSV:\n{str(e)}")
 
     # ====================== CÁLCULO (INTACTO POR CADA MODO) ======================
     def _calcular_modo(self, L, y_m, lambda_nm, delta_lambda_nm, m, forzar):
