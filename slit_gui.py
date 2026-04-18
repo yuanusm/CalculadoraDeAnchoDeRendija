@@ -1,9 +1,11 @@
-import csv
 import re
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
+from datetime import datetime
 import numpy as np
 from scipy import stats
+from export_utils import crear_directorio_exportacion, guardar_archivos_exportacion
+from plot_utils import generar_grafica_con_resumen
 
 
 # ─────────────────────────── UTILIDADES ───────────────────────────
@@ -73,7 +75,7 @@ class App:
         ttk.Button(btn_frame, text="Eliminar fila", command=self.eliminar_fila).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Limpiar tabla", command=self.limpiar_tabla).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Calcular", command=self.calcular).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="Exportar CSV", command=self.exportar_csv).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Exportar registro", command=self.exportar_registro).pack(side="left", padx=4)
 
         # ====================== ZONA INFERIOR ======================
         left = ttk.Frame(bottom)
@@ -300,40 +302,114 @@ class App:
 
         return np.array(L_list), np.array(y_list_cm)
 
-    def exportar_csv(self):
+    def _obtener_resultados(self):
+        if self.entry_edit and not self.guardar_edicion():
+            return None
+
+        lambda_nm = self._parse_float_no_negativo(self.lambda_entry.get(), "λ (nm)")
+        delta_lambda_nm = self._parse_float_no_negativo(self.dlambda_entry.get(), "Δλ (nm)")
+        m = self._parse_int_positivo(self.m_entry.get(), "m (orden)")
+
+        L, y_cm = self._leer_datos()
+        n = len(L)
+        if n < 2:
+            raise ValueError("Ingrese al menos 2 puntos válidos")
+
+        y_m = y_cm * 1e-2
+        if self.lateral_var.get():
+            y_m = y_m / 2.0
+
+        res_forzado = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, True)
+        res_libre = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, False)
+        advertencias = self._generar_advertencias(L, res_forzado, res_libre)
+
+        return {
+            "lambda_nm": lambda_nm,
+            "delta_lambda_nm": delta_lambda_nm,
+            "m": m,
+            "L": L,
+            "y_cm": y_cm,
+            "y_m": y_m,
+            "forzado": res_forzado,
+            "libre": res_libre,
+            "advertencias": advertencias,
+            "lateral": self.lateral_var.get(),
+        }
+
+    def exportar_registro(self):
         try:
-            if self.entry_edit and not self.guardar_edicion():
+            data = self._obtener_resultados()
+            if data is None:
                 return
 
-            filas = []
-            for row in self.tree.get_children():
-                vals = self.tree.item(row)["values"]
-                L_txt = str(vals[0]).strip()
-                y_txt = str(vals[1]).strip()
-                if not L_txt and not y_txt:
-                    continue
-                filas.append((L_txt, y_txt))
+            # Actualizar paneles de resultados antes de exportar
+            self._set_texto_solo_lectura(self.resultado_forzado, self._formatear_resultado(data["forzado"], True))
+            self._set_texto_solo_lectura(self.resultado_libre, self._formatear_resultado(data["libre"], False))
+            self._set_texto_solo_lectura(self.warnings, data["advertencias"])
 
-            if not filas:
-                messagebox.showwarning("Atención", "No hay datos para exportar.")
-                return
-
-            path = filedialog.asksaveasfilename(
-                title="Guardar datos como CSV",
-                defaultextension=".csv",
-                filetypes=[("CSV", "*.csv"), ("Todos los archivos", "*.*")],
+            carpeta = crear_directorio_exportacion()
+            resumen_forzado = (
+                f"a = {data['forzado']['sv']} ± {data['forzado']['su']} µm\n"
+                f"C = {data['forzado']['C']:.6g}\n"
+                f"ΔC (95%) = {abs(data['forzado']['rel_C'] * data['forzado']['C']):.6g}\n"
+                f"R² = {data['forzado']['r2']:.5f}"
             )
-            if not path:
-                return
+            resumen_libre = (
+                f"a = {data['libre']['sv']} ± {data['libre']['su']} µm\n"
+                f"C = {data['libre']['C']:.6g}\n"
+                f"b = {data['libre']['intercept']:.6g} m\n"
+                f"ΔC (95%) = {abs(data['libre']['rel_C'] * data['libre']['C']):.6g}\n"
+                f"R² = {data['libre']['r2']:.5f}"
+            )
 
-            with open(path, "w", newline="", encoding="utf-8") as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow(["L_m", "y_cm"])
-                writer.writerows(filas)
+            ruta_grafica_forzado = carpeta / "grafica_forzado_origen.png"
+            ruta_grafica_libre = carpeta / "grafica_sin_forzar_origen.png"
 
-            messagebox.showinfo("Éxito", f"Datos exportados correctamente en:\n{path}")
+            sigma_y = np.std(data["y_m"] - data["forzado"]["y_pred"], ddof=1) if len(data["y_m"]) > 1 else 0.0
+            if not np.isfinite(sigma_y):
+                sigma_y = 0.0
+            yerr = np.full_like(data["y_m"], sigma_y, dtype=float)
+
+            generar_grafica_con_resumen(
+                data["L"],
+                data["y_m"],
+                yerr,
+                data["forzado"]["y_pred"],
+                "Ajuste forzado al origen",
+                resumen_forzado,
+                ruta_grafica_forzado,
+            )
+            generar_grafica_con_resumen(
+                data["L"],
+                data["y_m"],
+                yerr,
+                data["libre"]["y_pred"],
+                "Ajuste sin forzar al origen",
+                resumen_libre,
+                ruta_grafica_libre,
+            )
+
+            guardar_archivos_exportacion(
+                carpeta=carpeta,
+                L=data["L"],
+                y_cm=data["y_cm"],
+                parametros={
+                    "lambda_nm": data["lambda_nm"],
+                    "delta_lambda_nm": data["delta_lambda_nm"],
+                    "m": data["m"],
+                    "modo_lateral_2m": data["lateral"],
+                },
+                resultado_forzado=self._formatear_resultado(data["forzado"], True),
+                resultado_libre=self._formatear_resultado(data["libre"], False),
+                advertencias=data["advertencias"],
+                log=f"Exportación creada: {datetime.now().isoformat(timespec='seconds')}\n"
+                    f"Carpeta: {carpeta}\n"
+                    f"Se generaron: datos.csv, resultados.txt, log.txt, grafica_forzado_origen.png, grafica_sin_forzar_origen.png",
+            )
+
+            messagebox.showinfo("Éxito", f"Registro exportado correctamente en:\n{carpeta}")
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo exportar el CSV:\n{str(e)}")
+            messagebox.showerror("Error", f"No se pudo exportar el registro:\n{str(e)}")
 
     # ====================== CÁLCULO (INTACTO POR CADA MODO) ======================
     def _calcular_modo(self, L, y_m, lambda_nm, delta_lambda_nm, m, forzar):
@@ -442,31 +518,12 @@ class App:
 
     def calcular(self):
         try:
-            if self.entry_edit and not self.guardar_edicion():
+            data = self._obtener_resultados()
+            if data is None:
                 return
-
-            lambda_nm = self._parse_float_no_negativo(self.lambda_entry.get(), "λ (nm)")
-            delta_lambda_nm = self._parse_float_no_negativo(self.dlambda_entry.get(), "Δλ (nm)")
-            m = self._parse_int_positivo(self.m_entry.get(), "m (orden)")
-
-            L, y_cm = self._leer_datos()
-            n = len(L)
-            if n < 2:
-                messagebox.showerror("Error", "Ingrese al menos 2 puntos válidos")
-                return
-
-            # Conversión de unidades solicitada
-            y_m = y_cm * 1e-2
-            if self.lateral_var.get():
-                y_m = y_m / 2.0
-
-            # Ambos casos siempre
-            res_forzado = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, True)
-            res_libre = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, False)
-
-            self._set_texto_solo_lectura(self.resultado_forzado, self._formatear_resultado(res_forzado, True))
-            self._set_texto_solo_lectura(self.resultado_libre, self._formatear_resultado(res_libre, False))
-            self._set_texto_solo_lectura(self.warnings, self._generar_advertencias(L, res_forzado, res_libre))
+            self._set_texto_solo_lectura(self.resultado_forzado, self._formatear_resultado(data["forzado"], True))
+            self._set_texto_solo_lectura(self.resultado_libre, self._formatear_resultado(data["libre"], False))
+            self._set_texto_solo_lectura(self.warnings, data["advertencias"])
 
         except Exception as e:
             messagebox.showerror("Error", f"Error durante el cálculo:\n{str(e)}")
