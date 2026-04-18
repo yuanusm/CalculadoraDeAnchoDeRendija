@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def generar_grafica_con_resumen(L, y_m, yerr, y_fit, titulo, resumen, path_salida):
+def generar_grafica_con_resumen(L, y_m, y_fit, C, delta_C, intercept, titulo, resumen, path_salida):
     try:
         import matplotlib.pyplot as plt
     except ModuleNotFoundError as exc:
@@ -11,7 +11,6 @@ def generar_grafica_con_resumen(L, y_m, yerr, y_fit, titulo, resumen, path_salid
 
     L = np.array(L, dtype=float)
     y_m = np.array(y_m, dtype=float)
-    yerr = np.array(yerr, dtype=float)
     y_fit = np.array(y_fit, dtype=float)
 
     orden = np.argsort(L)
@@ -23,17 +22,12 @@ def generar_grafica_con_resumen(L, y_m, yerr, y_fit, titulo, resumen, path_salid
     ax = fig.add_subplot(gs[0, 0])
     ax_info = fig.add_subplot(gs[0, 1])
 
-    ax.errorbar(
-        L,
-        y_m,
-        yerr=yerr,
-        fmt="o",
-        capsize=4,
-        color="#1f77b4",
-        ecolor="#444444",
-        label="Datos experimentales ±σ",
-    )
-    ax.plot(L_sorted, y_fit_sorted, "-", color="#d62728", linewidth=2, label="Ajuste lineal")
+    y_fit_sup = (C + delta_C) * L_sorted + intercept
+    y_fit_inf = (C - delta_C) * L_sorted + intercept
+
+    ax.plot(L, y_m, "o", color="#1f77b4", label="Datos experimentales")
+    ax.plot(L_sorted, y_fit_sorted, "-", color="#d62728", linewidth=2, label=f"Ajuste: C={C:.4g} ± {delta_C:.2g}")
+    ax.fill_between(L_sorted, y_fit_inf, y_fit_sup, color="#d62728", alpha=0.18, label="Incertidumbre de pendiente")
     ax.set_title(f"{titulo}\nGráfica y vs L")
     ax.set_xlabel("L (m)")
     ax.set_ylabel("y (m)")

@@ -61,12 +61,22 @@ class App:
         self.m_entry.grid(row=0, column=5, padx=(4, 10))
         self.m_entry.insert(0, "5")
 
+        ttk.Label(param_frame, text="ΔL (m):").grid(row=1, column=0, sticky="w", pady=2)
+        self.dL_entry = ttk.Entry(param_frame, width=9)
+        self.dL_entry.grid(row=1, column=1, padx=(4, 12))
+        self.dL_entry.insert(0, "0.001")
+
+        ttk.Label(param_frame, text="Δy (cm):").grid(row=1, column=2, sticky="w", pady=2)
+        self.dy_entry = ttk.Entry(param_frame, width=9)
+        self.dy_entry.grid(row=1, column=3, padx=(4, 12))
+        self.dy_entry.insert(0, "0.1")
+
         self.lateral_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             param_frame,
             text="Modo medición lateral (2m): interpretar y como 2m y usar y/2 internamente",
             variable=self.lateral_var,
-        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 0))
 
         btn_frame = ttk.Frame(top)
         btn_frame.pack(fill="x", pady=(6, 0))
@@ -309,6 +319,8 @@ class App:
         lambda_nm = self._parse_float_no_negativo(self.lambda_entry.get(), "λ (nm)")
         delta_lambda_nm = self._parse_float_no_negativo(self.dlambda_entry.get(), "Δλ (nm)")
         m = self._parse_int_positivo(self.m_entry.get(), "m (orden)")
+        delta_L_m = self._parse_float_no_negativo(self.dL_entry.get(), "ΔL (m)")
+        delta_y_cm = self._parse_float_no_negativo(self.dy_entry.get(), "Δy (cm)")
 
         L, y_cm = self._leer_datos()
         n = len(L)
@@ -319,14 +331,16 @@ class App:
         if self.lateral_var.get():
             y_m = y_m / 2.0
 
-        res_forzado = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, True)
-        res_libre = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, False)
+        res_forzado = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, True, delta_L_m, delta_y_cm * 1e-2)
+        res_libre = self._calcular_modo(L, y_m, lambda_nm, delta_lambda_nm, m, False, delta_L_m, delta_y_cm * 1e-2)
         advertencias = self._generar_advertencias(L, res_forzado, res_libre)
 
         return {
             "lambda_nm": lambda_nm,
             "delta_lambda_nm": delta_lambda_nm,
             "m": m,
+            "delta_L_m": delta_L_m,
+            "delta_y_cm": delta_y_cm,
             "L": L,
             "y_cm": y_cm,
             "y_m": y_m,
@@ -350,31 +364,26 @@ class App:
             carpeta = crear_directorio_exportacion()
             resumen_forzado = (
                 f"a = {data['forzado']['sv']} ± {data['forzado']['su']} µm\n"
-                f"C = {data['forzado']['C']:.6g}\n"
-                f"ΔC (95%) = {abs(data['forzado']['rel_C'] * data['forzado']['C']):.6g}\n"
+                f"C = {data['forzado']['C']:.6g} ± {data['forzado']['delta_C']:.6g}\n"
                 f"R² = {data['forzado']['r2']:.5f}"
             )
             resumen_libre = (
                 f"a = {data['libre']['sv']} ± {data['libre']['su']} µm\n"
-                f"C = {data['libre']['C']:.6g}\n"
+                f"C = {data['libre']['C']:.6g} ± {data['libre']['delta_C']:.6g}\n"
                 f"b = {data['libre']['intercept']:.6g} m\n"
-                f"ΔC (95%) = {abs(data['libre']['rel_C'] * data['libre']['C']):.6g}\n"
                 f"R² = {data['libre']['r2']:.5f}"
             )
 
             ruta_grafica_forzado = carpeta / "grafica_forzado_origen.png"
             ruta_grafica_libre = carpeta / "grafica_sin_forzar_origen.png"
 
-            sigma_y = np.std(data["y_m"] - data["forzado"]["y_pred"], ddof=1) if len(data["y_m"]) > 1 else 0.0
-            if not np.isfinite(sigma_y):
-                sigma_y = 0.0
-            yerr = np.full_like(data["y_m"], sigma_y, dtype=float)
-
             generar_grafica_con_resumen(
                 data["L"],
                 data["y_m"],
-                yerr,
                 data["forzado"]["y_pred"],
+                data["forzado"]["C"],
+                data["forzado"]["delta_C"],
+                data["forzado"]["intercept"],
                 "Ajuste forzado al origen",
                 resumen_forzado,
                 ruta_grafica_forzado,
@@ -382,8 +391,10 @@ class App:
             generar_grafica_con_resumen(
                 data["L"],
                 data["y_m"],
-                yerr,
                 data["libre"]["y_pred"],
+                data["libre"]["C"],
+                data["libre"]["delta_C"],
+                data["libre"]["intercept"],
                 "Ajuste sin forzar al origen",
                 resumen_libre,
                 ruta_grafica_libre,
@@ -397,6 +408,8 @@ class App:
                     "lambda_nm": data["lambda_nm"],
                     "delta_lambda_nm": data["delta_lambda_nm"],
                     "m": data["m"],
+                    "delta_L_m": data["delta_L_m"],
+                    "delta_y_cm": data["delta_y_cm"],
                     "modo_lateral_2m": data["lateral"],
                 },
                 resultado_forzado=self._formatear_resultado(data["forzado"], True),
@@ -412,7 +425,7 @@ class App:
             messagebox.showerror("Error", f"No se pudo exportar el registro:\n{str(e)}")
 
     # ====================== CÁLCULO (INTACTO POR CADA MODO) ======================
-    def _calcular_modo(self, L, y_m, lambda_nm, delta_lambda_nm, m, forzar):
+    def _calcular_modo(self, L, y_m, lambda_nm, delta_lambda_nm, m, forzar, delta_L_m=0.0, delta_y_m=0.0):
         lam = lambda_nm * 1e-9
         dlam = delta_lambda_nm * 1e-9
         n = len(L)
@@ -446,10 +459,21 @@ class App:
                 var_C = s**2 / np.sum((L - np.mean(L))**2)
             se_C = np.sqrt(var_C)
             t_factor = stats.t.ppf(0.975, df)
-            delta_C = t_factor * se_C
+            delta_C_stat = t_factor * se_C
         else:
-            delta_C = np.nan
+            delta_C_stat = np.nan
             t_factor = np.nan
+
+        y_ref = np.mean(np.abs(y_m)) if len(y_m) else 0.0
+        L_ref = np.mean(np.abs(L)) if len(L) else 0.0
+        rel_med_y = (delta_y_m / y_ref) if y_ref > 0 else 0.0
+        rel_med_L = (delta_L_m / L_ref) if L_ref > 0 else 0.0
+        rel_C_med = np.sqrt(rel_med_y**2 + rel_med_L**2)
+        delta_C_med = abs(C) * rel_C_med
+        if np.isnan(delta_C_stat):
+            delta_C = delta_C_med
+        else:
+            delta_C = np.sqrt(delta_C_stat**2 + delta_C_med**2)
 
         a = m * lam / C
         rel_lam = dlam / lam
@@ -467,6 +491,9 @@ class App:
             "y_pred": y_pred,
             "r2": r2,
             "t_factor": t_factor,
+            "delta_C": delta_C,
+            "delta_C_stat": delta_C_stat,
+            "delta_C_med": delta_C_med,
             "rel_lam": rel_lam,
             "rel_C": rel_C,
             "rel_a": rel_a,
@@ -481,7 +508,9 @@ class App:
         texto = f"a = {result['sv']} ± {result['su']} µm\n\n"
         texto += f"a (sin restricción) = {result['a_um']:.12g} µm\n"
         texto += f"Δa (sin restricción) = {result['da_um']:.12g} µm\n\n"
-        texto += f"Pendiente C     = {result['C']:.6g}\n"
+        texto += f"Pendiente C     = {result['C']:.6g} ± {result['delta_C']:.6g}\n"
+        texto += f"ΔC estadístico  = {result['delta_C_stat']:.6g}\n"
+        texto += f"ΔC instrumental = {result['delta_C_med']:.6g}\n"
         if not forzado:
             texto += f"Intercepto      = {result['intercept']:.6f} m\n"
         texto += f"R²              = {result['r2']:.5f}\n\n"
